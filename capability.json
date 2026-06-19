@@ -1,0 +1,67 @@
+{
+  "id": "projects-sync",
+  "role": "feature",
+  "version": "0.1.0",
+  "title": "GitHub Projects Sync",
+  "description": "One-way, idempotent, opt-in mirror of GSD .planning/ROADMAP.md phases and milestones to GitHub Issues, Milestones, and (optionally) a Projects v2 board.",
+  "tier": "full",
+  "requires": [],
+  "engines": { "gsd": ">=1.6.0" },
+  "runtimeCompat": { "supported": ["*"], "unsupported": [] },
+  "author": { "name": "The Artificer of Ciphers LLC", "url": "https://github.com/The-Artificer-of-Ciphers-LLC" },
+  "homepage": "https://github.com/The-Artificer-of-Ciphers-LLC/projects-sync-capability",
+  "repository": "https://github.com/The-Artificer-of-Ciphers-LLC/projects-sync-capability",
+  "license": "MIT",
+  "provenance": { "sourceRepo": "https://github.com/The-Artificer-of-Ciphers-LLC/projects-sync-capability", "commit": "" },
+  "skills": ["projects-sync"],
+  "agents": [],
+  "activationKey": "projects-sync.enabled",
+  "config": {
+    "projects-sync.enabled": {
+      "type": "boolean",
+      "default": false,
+      "description": "Enable the projects-sync capability. Default off; the loop hooks and commands are inert until this is true."
+    },
+    "projects-sync.board": {
+      "type": "boolean",
+      "default": false,
+      "description": "Also add synced issues to a GitHub Projects v2 board. Requires a classic PAT with the 'project' scope; fine-grained tokens cannot reach user-owned boards."
+    },
+    "projects-sync.project_url": {
+      "type": "string",
+      "default": "",
+      "description": "URL of the GitHub Projects v2 board to add issues to when projects-sync.board is enabled (e.g. https://github.com/users/<user>/projects/<n>)."
+    }
+  },
+  "commands": [
+    {
+      "family": "projects-sync",
+      "module": "projects-sync-router.cjs",
+      "router": "routeProjectsSyncCommand",
+      "subcommands": ["sync", "status", "init"]
+    }
+  ],
+  "hooks": [],
+  "steps": [
+    {
+      "point": "execute:pre",
+      "ref": { "command": "projects-sync sync" },
+      "produces": [".planning/projects-sync/SYNC-RECEIPT.json"],
+      "consumes": [],
+      "when": "projects-sync.enabled",
+      "onError": "skip"
+    }
+  ],
+  "contributions": [
+    {
+      "point": "ship:post",
+      "into": "orchestrator",
+      "fragment": { "path": "fragments/ship-post.md" },
+      "produces": [],
+      "consumes": [],
+      "when": "projects-sync.enabled",
+      "onError": "skip"
+    }
+  ],
+  "gates": []
+}

@@ -1,0 +1,25 @@
+{
+  "name": "projects-sync-capability",
+  "version": "0.1.0",
+  "description": "GSD third-party capability: one-way idempotent sync of .planning/ROADMAP.md to GitHub Issues, Milestones, and Projects v2.",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "projects-sync-router.cjs",
+  "files": [
+    "capability.json",
+    "projects-sync-router.cjs",
+    "lib/",
+    "skills/",
+    "fragments/"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.cjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/The-Artificer-of-Ciphers-LLC/projects-sync-capability.git"
+  }
+}
