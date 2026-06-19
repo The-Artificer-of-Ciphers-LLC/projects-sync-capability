@@ -51,7 +51,7 @@ const fakeReceipt = {
 
 /**
  * Builds a deps bag for router injection.
- * All methods are no-ops / canned values unless overridden.
+ * All methods are synchronous no-ops / canned values unless overridden.
  */
 function makeDeps(overrides = {}) {
   const logs = [];
@@ -59,8 +59,8 @@ function makeDeps(overrides = {}) {
   const errors = [];
 
   const deps = {
-    sync: async () => fakeReceipt,
-    loadPhases: async () => fakePhasesData,
+    sync: () => fakeReceipt,
+    loadPhases: () => fakePhasesData,
     createGitHubClient: () => ({
       findIssueByMarker: () => null,
       createIssue: () => ({ number: 100 }),
@@ -83,13 +83,14 @@ function makeDeps(overrides = {}) {
 }
 
 /**
- * Runs the router and captures error() calls.
+ * Runs the router synchronously and captures error() calls.
+ * The router MUST NOT return a Promise; we verify that here.
  */
-async function runRouter(args, depsOverrides = {}, { raw = false } = {}) {
+function runRouter(args, depsOverrides = {}, { raw = false } = {}) {
   const errors = [];
   const deps = makeDeps({ ...depsOverrides, _errors: errors });
 
-  const result = await routeProjectsSyncCommand({
+  const result = routeProjectsSyncCommand({
     args,
     cwd: FAKE_CWD,
     raw,
@@ -97,16 +98,58 @@ async function runRouter(args, depsOverrides = {}, { raw = false } = {}) {
     deps,
   });
 
+  // Contract: router must be fully synchronous — result must never be a Promise
+  assert.ok(
+    typeof result?.then !== 'function',
+    `routeProjectsSyncCommand returned a Promise for args=${JSON.stringify(args)}; router must be synchronous`
+  );
+
   return { result, deps, errors };
 }
+
+// ---------------------------------------------------------------------------
+// Synchronous contract
+// ---------------------------------------------------------------------------
+
+describe('routeProjectsSyncCommand — synchronous contract', () => {
+  it('returns a plain object (not a Promise) for sync subcommand', () => {
+    const { result } = runRouter(['projects-sync', 'sync', '--repo', 'owner/repo']);
+    assert.ok(result !== null && typeof result === 'object', 'must return an object');
+    assert.ok(typeof result.then !== 'function', 'must NOT be a Promise');
+  });
+
+  it('returns a plain object (not a Promise) for status subcommand', () => {
+    const { result } = runRouter(['projects-sync', 'status', '--repo', 'owner/repo'], {
+      loadPhases: () => fakePhasesData,
+      createGitHubClient: () => ({
+        findIssueByMarker: () => null,
+        createIssue: () => {},
+        updateIssue: () => {},
+        setIssueState: () => {},
+        ensureMilestone: () => 1,
+      }),
+    });
+    assert.ok(typeof result.then !== 'function', 'must NOT be a Promise');
+  });
+
+  it('returns a plain object (not a Promise) for unknown subcommand', () => {
+    const { result } = runRouter(['projects-sync', 'bogus']);
+    assert.ok(typeof result.then !== 'function', 'must NOT be a Promise');
+  });
+
+  it('returns a plain object (not a Promise) when no subcommand given', () => {
+    const { result } = runRouter(['projects-sync']);
+    assert.ok(typeof result.then !== 'function', 'must NOT be a Promise');
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Unknown subcommand
 // ---------------------------------------------------------------------------
 
 describe('routeProjectsSyncCommand — unknown subcommand', () => {
-  it('calls error() with a message listing available subcommands', async () => {
-    const { errors } = await runRouter(['bogus-command']);
+  it('calls error() with a message listing available subcommands', () => {
+    const { errors } = runRouter(['projects-sync', 'bogus-command']);
     assert.equal(errors.length, 1, 'error must be called exactly once');
     const msg = errors[0];
     // Must mention the valid subcommands
@@ -115,8 +158,8 @@ describe('routeProjectsSyncCommand — unknown subcommand', () => {
     assert.ok(msg.includes('init'), 'error message must mention "init"');
   });
 
-  it('returns a non-success result for unknown subcommands', async () => {
-    const { result } = await runRouter(['unknown']);
+  it('returns a non-success result for unknown subcommands', () => {
+    const { result } = runRouter(['projects-sync', 'unknown']);
     // The result should signal failure (ok:false or have an error property)
     assert.ok(
       result === false || result?.ok === false || typeof result?.error === 'string',
@@ -124,9 +167,22 @@ describe('routeProjectsSyncCommand — unknown subcommand', () => {
     );
   });
 
-  it('no-args also calls error()', async () => {
-    const { errors } = await runRouter([]);
-    assert.equal(errors.length, 1);
+  it('no subcommand (only family name) also calls error()', () => {
+    const { errors } = runRouter(['projects-sync']);
+    assert.equal(errors.length, 1, 'error must be called when no subcommand is given');
+  });
+
+  it('no subcommand error message lists available subcommands', () => {
+    const { errors } = runRouter(['projects-sync']);
+    const msg = errors[0];
+    assert.ok(msg.includes('sync'), 'error message must mention "sync"');
+    assert.ok(msg.includes('status'), 'error message must mention "status"');
+    assert.ok(msg.includes('init'), 'error message must mention "init"');
+  });
+
+  it('empty args array also calls error()', () => {
+    const { errors } = runRouter([]);
+    assert.equal(errors.length, 1, 'error must be called when args is empty');
   });
 });
 
@@ -135,17 +191,17 @@ describe('routeProjectsSyncCommand — unknown subcommand', () => {
 // ---------------------------------------------------------------------------
 
 describe('routeProjectsSyncCommand — sync subcommand', () => {
-  it('calls injected sync() exactly once', async () => {
+  it('calls injected sync() exactly once', () => {
     let syncCalls = 0;
-    const { errors } = await runRouter(['sync', '--repo', 'owner/repo'], {
-      sync: async () => { syncCalls++; return fakeReceipt; },
+    const { errors } = runRouter(['projects-sync', 'sync', '--repo', 'owner/repo'], {
+      sync: () => { syncCalls++; return fakeReceipt; },
     });
     assert.equal(syncCalls, 1, 'sync() must be called exactly once');
     assert.equal(errors.length, 0);
   });
 
-  it('writes the receipt JSON to <cwd>/.planning/projects-sync/SYNC-RECEIPT.json', async () => {
-    const { deps } = await runRouter(['sync', '--repo', 'owner/repo']);
+  it('writes the receipt JSON to <cwd>/.planning/projects-sync/SYNC-RECEIPT.json', () => {
+    const { deps } = runRouter(['projects-sync', 'sync', '--repo', 'owner/repo']);
 
     assert.equal(deps._writes.length, 1, 'writeFile must be called once');
     const write = deps._writes[0];
@@ -153,15 +209,15 @@ describe('routeProjectsSyncCommand — sync subcommand', () => {
     assert.equal(write.filePath, expectedPath, 'receipt must be written to the expected path');
   });
 
-  it('written content is valid JSON matching the receipt', async () => {
-    const { deps } = await runRouter(['sync', '--repo', 'owner/repo']);
+  it('written content is valid JSON matching the receipt', () => {
+    const { deps } = runRouter(['projects-sync', 'sync', '--repo', 'owner/repo']);
     const write = deps._writes[0];
     const parsed = JSON.parse(write.content);
     assert.deepEqual(parsed, fakeReceipt);
   });
 
-  it('prints human summary when raw=false', async () => {
-    const { deps } = await runRouter(['sync', '--repo', 'owner/repo'], {}, { raw: false });
+  it('prints human summary when raw=false', () => {
+    const { deps } = runRouter(['projects-sync', 'sync', '--repo', 'owner/repo'], {}, { raw: false });
     // At least one log call with human-readable content (not raw JSON of the receipt)
     assert.ok(deps._logs.length > 0, 'must log something for human output');
     const combined = deps._logs.join('\n');
@@ -172,8 +228,8 @@ describe('routeProjectsSyncCommand — sync subcommand', () => {
     );
   });
 
-  it('prints raw JSON receipt when raw=true', async () => {
-    const { deps } = await runRouter(['sync', '--repo', 'owner/repo'], {}, { raw: true });
+  it('prints raw JSON receipt when raw=true', () => {
+    const { deps } = runRouter(['projects-sync', 'sync', '--repo', 'owner/repo'], {}, { raw: true });
     const combined = deps._logs.join('\n');
     // Should be parseable as JSON and match the receipt
     let parsed;
@@ -185,18 +241,18 @@ describe('routeProjectsSyncCommand — sync subcommand', () => {
     assert.deepEqual(parsed, fakeReceipt);
   });
 
-  it('passes repo from --repo flag to sync()', async () => {
+  it('passes repo from --repo flag to sync()', () => {
     let capturedRepo;
-    await runRouter(['sync', '--repo', 'myorg/myrepo'], {
-      sync: async ({ repo }) => { capturedRepo = repo; return fakeReceipt; },
+    runRouter(['projects-sync', 'sync', '--repo', 'myorg/myrepo'], {
+      sync: ({ repo }) => { capturedRepo = repo; return fakeReceipt; },
     });
     assert.equal(capturedRepo, 'myorg/myrepo');
   });
 
-  it('resolves repo from exec when --repo is omitted', async () => {
+  it('resolves repo from exec when --repo is omitted', () => {
     let capturedRepo;
-    await runRouter(['sync'], {
-      sync: async ({ repo }) => { capturedRepo = repo; return fakeReceipt; },
+    runRouter(['projects-sync', 'sync'], {
+      sync: ({ repo }) => { capturedRepo = repo; return fakeReceipt; },
       exec: () => JSON.stringify({ nameWithOwner: 'resolved/repo' }),
     });
     assert.equal(capturedRepo, 'resolved/repo');
@@ -208,10 +264,10 @@ describe('routeProjectsSyncCommand — sync subcommand', () => {
 // ---------------------------------------------------------------------------
 
 describe('routeProjectsSyncCommand — status subcommand (dry run)', () => {
-  it('calls loadPhases to read roadmap data', async () => {
+  it('calls loadPhases to read roadmap data', () => {
     let loadCalled = false;
-    await runRouter(['status', '--repo', 'owner/repo'], {
-      loadPhases: async () => { loadCalled = true; return fakePhasesData; },
+    runRouter(['projects-sync', 'status', '--repo', 'owner/repo'], {
+      loadPhases: () => { loadCalled = true; return fakePhasesData; },
       createGitHubClient: () => ({
         findIssueByMarker: () => null,
         createIssue: () => { throw new Error('createIssue must NOT be called in status'); },
@@ -223,10 +279,10 @@ describe('routeProjectsSyncCommand — status subcommand (dry run)', () => {
     assert.ok(loadCalled, 'loadPhases must be called');
   });
 
-  it('does NOT call createIssue during status (dry run guarantee)', async () => {
+  it('does NOT call createIssue during status (dry run guarantee)', () => {
     const mutationCalls = [];
-    const { errors } = await runRouter(['status', '--repo', 'owner/repo'], {
-      loadPhases: async () => fakePhasesData,
+    const { errors } = runRouter(['projects-sync', 'status', '--repo', 'owner/repo'], {
+      loadPhases: () => fakePhasesData,
       createGitHubClient: () => ({
         findIssueByMarker: () => null,
         createIssue: (...args) => { mutationCalls.push({ method: 'createIssue', args }); return { number: 999 }; },
@@ -240,10 +296,10 @@ describe('routeProjectsSyncCommand — status subcommand (dry run)', () => {
     assert.equal(errors.length, 0);
   });
 
-  it('does NOT call updateIssue during status', async () => {
+  it('does NOT call updateIssue during status', () => {
     const mutationCalls = [];
-    await runRouter(['status', '--repo', 'owner/repo'], {
-      loadPhases: async () => fakePhasesData,
+    runRouter(['projects-sync', 'status', '--repo', 'owner/repo'], {
+      loadPhases: () => fakePhasesData,
       createGitHubClient: () => ({
         findIssueByMarker: () => ({ number: 10, state: 'open', title: 'Phase 1' }),
         createIssue: (...args) => mutationCalls.push({ method: 'createIssue', args }),
@@ -255,11 +311,11 @@ describe('routeProjectsSyncCommand — status subcommand (dry run)', () => {
     assert.equal(mutationCalls.length, 0, 'no mutations in dry-run');
   });
 
-  it('does NOT call setIssueState during status (even when close would be needed)', async () => {
+  it('does NOT call setIssueState during status (even when close would be needed)', () => {
     const mutationCalls = [];
     // phase 2 is complete (should close) but status must not close
-    await runRouter(['status', '--repo', 'owner/repo'], {
-      loadPhases: async () => fakePhasesData,
+    runRouter(['projects-sync', 'status', '--repo', 'owner/repo'], {
+      loadPhases: () => fakePhasesData,
       createGitHubClient: () => ({
         // phase 2 exists as open, but it's complete → status would REPORT close needed
         findIssueByMarker: (n) => n === 2 ? { number: 200, state: 'open', title: 'Phase 2' } : null,
@@ -272,9 +328,9 @@ describe('routeProjectsSyncCommand — status subcommand (dry run)', () => {
     assert.equal(mutationCalls.length, 0, 'setIssueState must not be called during status');
   });
 
-  it('does NOT write a SYNC-RECEIPT.json file during status', async () => {
-    const { deps } = await runRouter(['status', '--repo', 'owner/repo'], {
-      loadPhases: async () => fakePhasesData,
+  it('does NOT write a SYNC-RECEIPT.json file during status', () => {
+    const { deps } = runRouter(['projects-sync', 'status', '--repo', 'owner/repo'], {
+      loadPhases: () => fakePhasesData,
       createGitHubClient: () => ({
         findIssueByMarker: () => null,
         createIssue: () => {},
@@ -286,9 +342,9 @@ describe('routeProjectsSyncCommand — status subcommand (dry run)', () => {
     assert.equal(deps._writes.length, 0, 'status must not write any files');
   });
 
-  it('prints status report (human or raw) without mutating', async () => {
-    const { deps } = await runRouter(['status', '--repo', 'owner/repo'], {
-      loadPhases: async () => fakePhasesData,
+  it('prints status report (human or raw) without mutating', () => {
+    const { deps } = runRouter(['projects-sync', 'status', '--repo', 'owner/repo'], {
+      loadPhases: () => fakePhasesData,
       createGitHubClient: () => ({
         findIssueByMarker: () => null,
         createIssue: () => {},
@@ -300,9 +356,9 @@ describe('routeProjectsSyncCommand — status subcommand (dry run)', () => {
     assert.ok(deps._logs.length > 0, 'status must print something');
   });
 
-  it('raw=true for status prints JSON', async () => {
-    const { deps } = await runRouter(['status', '--repo', 'owner/repo'], {
-      loadPhases: async () => fakePhasesData,
+  it('raw=true for status prints JSON', () => {
+    const { deps } = runRouter(['projects-sync', 'status', '--repo', 'owner/repo'], {
+      loadPhases: () => fakePhasesData,
       createGitHubClient: () => ({
         findIssueByMarker: () => null,
         createIssue: () => {},
@@ -328,22 +384,22 @@ describe('routeProjectsSyncCommand — status subcommand (dry run)', () => {
 // ---------------------------------------------------------------------------
 
 describe('routeProjectsSyncCommand — init subcommand', () => {
-  it('init calls sync() (delegating milestone ensure to sync)', async () => {
+  it('init calls sync() (delegating milestone ensure to sync)', () => {
     let syncCalled = false;
-    const { errors } = await runRouter(['init', '--repo', 'owner/repo'], {
-      sync: async () => { syncCalled = true; return fakeReceipt; },
+    const { errors } = runRouter(['projects-sync', 'init', '--repo', 'owner/repo'], {
+      sync: () => { syncCalled = true; return fakeReceipt; },
     });
     assert.ok(syncCalled, 'init must invoke sync()');
     assert.equal(errors.length, 0);
   });
 
-  it('init prints a summary (not silent)', async () => {
-    const { deps } = await runRouter(['init', '--repo', 'owner/repo']);
+  it('init prints a summary (not silent)', () => {
+    const { deps } = runRouter(['projects-sync', 'init', '--repo', 'owner/repo']);
     assert.ok(deps._logs.length > 0, 'init must print something');
   });
 
-  it('init writes the receipt file', async () => {
-    const { deps } = await runRouter(['init', '--repo', 'owner/repo']);
+  it('init writes the receipt file', () => {
+    const { deps } = runRouter(['projects-sync', 'init', '--repo', 'owner/repo']);
     assert.ok(deps._writes.length > 0, 'init must write the receipt file');
   });
 });
@@ -353,10 +409,10 @@ describe('routeProjectsSyncCommand — init subcommand', () => {
 // ---------------------------------------------------------------------------
 
 describe('routeProjectsSyncCommand — board flag deferred', () => {
-  it('sync with --board flag sets boardDeferred on receipt', async () => {
+  it('sync with --board flag sets boardDeferred on receipt', () => {
     let receivedOpts;
-    await runRouter(['sync', '--repo', 'owner/repo', '--board'], {
-      sync: async (opts) => { receivedOpts = opts; return { ...fakeReceipt, boardDeferred: true }; },
+    runRouter(['projects-sync', 'sync', '--repo', 'owner/repo', '--board'], {
+      sync: (opts) => { receivedOpts = opts; return { ...fakeReceipt, boardDeferred: true }; },
     });
     assert.ok(receivedOpts?.board === true, 'board:true must be passed to sync()');
   });

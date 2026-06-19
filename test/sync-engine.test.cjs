@@ -128,14 +128,27 @@ describe('renderIssueBody', () => {
 });
 
 // ---------------------------------------------------------------------------
+// runSync — synchronous contract
+// ---------------------------------------------------------------------------
+
+describe('runSync — synchronous contract', () => {
+  it('returns a plain object, not a Promise', () => {
+    const github = makeFakeGitHub({ findIssueByMarker: null, createIssue: { number: 42 } });
+    const result = runSync({ phasesData: makePhasesData(), github, milestoneTitle: 'v1.0' });
+    assert.ok(result !== null && typeof result === 'object', 'result must be an object');
+    assert.ok(typeof result.then !== 'function', 'result must NOT be a Promise');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // runSync — create path
 // ---------------------------------------------------------------------------
 
 describe('runSync — create path (no existing issues)', () => {
-  it('calls createIssue for each phase when findIssueByMarker returns null', async () => {
+  it('calls createIssue for each phase when findIssueByMarker returns null', () => {
     const github = makeFakeGitHub({ findIssueByMarker: null, createIssue: { number: 42 } });
     const phasesData = makePhasesData();
-    const receipt = await runSync({ phasesData, github, milestoneTitle: 'v1.0 Launch' });
+    const receipt = runSync({ phasesData, github, milestoneTitle: 'v1.0 Launch' });
 
     assert.equal(github.calls.createIssue.length, 2, 'createIssue must be called once per phase');
     assert.equal(receipt.created.length, 2);
@@ -143,51 +156,51 @@ describe('runSync — create path (no existing issues)', () => {
     assert.equal(receipt.errors.length, 0);
   });
 
-  it('createIssue receives title "Phase <N>: <name>"', async () => {
+  it('createIssue receives title "Phase <N>: <name>"', () => {
     const github = makeFakeGitHub({ findIssueByMarker: null, createIssue: { number: 10 } });
     const phasesData = makePhasesData();
-    await runSync({ phasesData, github, milestoneTitle: 'v1.0' });
+    runSync({ phasesData, github, milestoneTitle: 'v1.0' });
 
     const firstCreate = github.calls.createIssue[0];
     assert.equal(firstCreate.title, 'Phase 1: Foundation');
   });
 
-  it('createIssue receives the correct label for a pending phase', async () => {
+  it('createIssue receives the correct label for a pending phase', () => {
     const github = makeFakeGitHub({ findIssueByMarker: null, createIssue: { number: 10 } });
     const phasesData = makePhasesData();
-    await runSync({ phasesData, github, milestoneTitle: 'v1.0' });
+    runSync({ phasesData, github, milestoneTitle: 'v1.0' });
 
     const firstCreate = github.calls.createIssue[0];
     assert.ok(Array.isArray(firstCreate.labels), 'labels must be an array');
     assert.ok(firstCreate.labels.includes('gsd:pending'), 'pending phase must carry gsd:pending label');
   });
 
-  it('createIssue receives the correct label for an in-progress phase', async () => {
+  it('createIssue receives the correct label for an in-progress phase', () => {
     const github = makeFakeGitHub({ findIssueByMarker: null, createIssue: { number: 10 } });
     const phasesData = makePhasesData();
-    await runSync({ phasesData, github, milestoneTitle: 'v1.0' });
+    runSync({ phasesData, github, milestoneTitle: 'v1.0' });
 
     // phase 2 is in_progress (disk_status: 'in_progress', plan_count: 2)
     const secondCreate = github.calls.createIssue[1];
     assert.ok(secondCreate.labels.includes('gsd:in-progress'));
   });
 
-  it('body passed to createIssue contains the marker', async () => {
+  it('body passed to createIssue contains the marker', () => {
     const github = makeFakeGitHub({ findIssueByMarker: null, createIssue: { number: 10 } });
     const phasesData = makePhasesData();
-    await runSync({ phasesData, github, milestoneTitle: 'v1.0' });
+    runSync({ phasesData, github, milestoneTitle: 'v1.0' });
 
     const firstCreate = github.calls.createIssue[0];
     assert.ok(firstCreate.body.includes(phaseMarker(1)), 'body must contain the marker');
   });
 
-  it('records issue numbers in receipt.created', async () => {
+  it('records issue numbers in receipt.created', () => {
     let counter = 100;
     const github = makeFakeGitHub({
       findIssueByMarker: null,
       createIssue: () => ({ number: ++counter }),
     });
-    const receipt = await runSync({ phasesData: makePhasesData(), github, milestoneTitle: 'v1.0' });
+    const receipt = runSync({ phasesData: makePhasesData(), github, milestoneTitle: 'v1.0' });
     assert.deepEqual(receipt.created.map((c) => c.phase), [1, 2]);
   });
 });
@@ -197,7 +210,7 @@ describe('runSync — create path (no existing issues)', () => {
 // ---------------------------------------------------------------------------
 
 describe('runSync — update path (existing open issue, still open)', () => {
-  it('calls updateIssue and does not call createIssue or setIssueState', async () => {
+  it('calls updateIssue and does not call createIssue or setIssueState', () => {
     const existing = { number: 77, state: 'open', title: 'Phase 1: Foundation' };
     const github = makeFakeGitHub({ findIssueByMarker: existing, createIssue: { number: 999 } });
     const phasesData = makePhasesData({
@@ -206,7 +219,7 @@ describe('runSync — update path (existing open issue, still open)', () => {
       }],
     });
 
-    const receipt = await runSync({ phasesData, github, milestoneTitle: 'v1.0' });
+    const receipt = runSync({ phasesData, github, milestoneTitle: 'v1.0' });
 
     assert.equal(github.calls.createIssue.length, 0, 'createIssue must NOT be called');
     assert.equal(github.calls.updateIssue.length, 1, 'updateIssue must be called once');
@@ -215,7 +228,7 @@ describe('runSync — update path (existing open issue, still open)', () => {
     assert.equal(receipt.created.length, 0);
   });
 
-  it('updateIssue is called with the existing issue number', async () => {
+  it('updateIssue is called with the existing issue number', () => {
     const existing = { number: 77, state: 'open', title: 'Phase 1: Foundation' };
     const github = makeFakeGitHub({ findIssueByMarker: existing });
     const phasesData = makePhasesData({
@@ -224,7 +237,7 @@ describe('runSync — update path (existing open issue, still open)', () => {
       }],
     });
 
-    await runSync({ phasesData, github, milestoneTitle: 'v1.0' });
+    runSync({ phasesData, github, milestoneTitle: 'v1.0' });
     assert.equal(github.calls.updateIssue[0].number, 77);
   });
 });
@@ -234,7 +247,7 @@ describe('runSync — update path (existing open issue, still open)', () => {
 // ---------------------------------------------------------------------------
 
 describe('runSync — close transition (existing open + phase complete)', () => {
-  it('calls setIssueState("closed") and records in receipt.closed', async () => {
+  it('calls setIssueState("closed") and records in receipt.closed', () => {
     const existing = { number: 55, state: 'open', title: 'Phase 3: Setup' };
     const github = makeFakeGitHub({ findIssueByMarker: existing });
     const phasesData = makePhasesData({
@@ -243,7 +256,7 @@ describe('runSync — close transition (existing open + phase complete)', () => 
       }],
     });
 
-    const receipt = await runSync({ phasesData, github, milestoneTitle: 'v1.0' });
+    const receipt = runSync({ phasesData, github, milestoneTitle: 'v1.0' });
 
     assert.equal(github.calls.setIssueState.length, 1, 'setIssueState must be called');
     assert.equal(github.calls.setIssueState[0].state, 'closed');
@@ -252,7 +265,7 @@ describe('runSync — close transition (existing open + phase complete)', () => 
     assert.equal(receipt.closed[0].phase, 3);
   });
 
-  it('also calls updateIssue before closing (body/label sync)', async () => {
+  it('also calls updateIssue before closing (body/label sync)', () => {
     const existing = { number: 55, state: 'open', title: 'Phase 3: Setup' };
     const github = makeFakeGitHub({ findIssueByMarker: existing });
     const phasesData = makePhasesData({
@@ -261,7 +274,7 @@ describe('runSync — close transition (existing open + phase complete)', () => 
       }],
     });
 
-    await runSync({ phasesData, github, milestoneTitle: 'v1.0' });
+    runSync({ phasesData, github, milestoneTitle: 'v1.0' });
     assert.equal(github.calls.updateIssue.length, 1, 'updateIssue must also be called');
   });
 });
@@ -271,7 +284,7 @@ describe('runSync — close transition (existing open + phase complete)', () => 
 // ---------------------------------------------------------------------------
 
 describe('runSync — idempotent re-run', () => {
-  it('calls updateIssue but NOT setIssueState when issue already in target state', async () => {
+  it('calls updateIssue but NOT setIssueState when issue already in target state', () => {
     // existing closed issue, phase also complete → no state change needed
     const existing = { number: 88, state: 'closed', title: 'Phase 4: Deploy' };
     const github = makeFakeGitHub({ findIssueByMarker: existing });
@@ -281,7 +294,7 @@ describe('runSync — idempotent re-run', () => {
       }],
     });
 
-    const receipt = await runSync({ phasesData, github, milestoneTitle: 'v1.0' });
+    const receipt = runSync({ phasesData, github, milestoneTitle: 'v1.0' });
 
     assert.equal(github.calls.setIssueState.length, 0, 'setIssueState must NOT be called');
     assert.equal(github.calls.updateIssue.length, 1, 'updateIssue IS still called (body sync)');
@@ -289,7 +302,7 @@ describe('runSync — idempotent re-run', () => {
     assert.equal(receipt.updated.length, 1);
   });
 
-  it('does not record in receipt.closed when issue was already closed', async () => {
+  it('does not record in receipt.closed when issue was already closed', () => {
     const existing = { number: 88, state: 'closed', title: 'Phase 4: Deploy' };
     const github = makeFakeGitHub({ findIssueByMarker: existing });
     const phasesData = makePhasesData({
@@ -298,11 +311,11 @@ describe('runSync — idempotent re-run', () => {
       }],
     });
 
-    const receipt = await runSync({ phasesData, github, milestoneTitle: 'v1.0' });
+    const receipt = runSync({ phasesData, github, milestoneTitle: 'v1.0' });
     assert.equal(receipt.closed.length, 0);
   });
 
-  it('calling runSync twice on same data produces the same receipt shape (idempotent)', async () => {
+  it('calling runSync twice on same data produces the same receipt shape (idempotent)', () => {
     const existing = { number: 10, state: 'open', title: 'Phase 1: Foundation' };
     const github1 = makeFakeGitHub({ findIssueByMarker: existing });
     const github2 = makeFakeGitHub({ findIssueByMarker: existing });
@@ -312,8 +325,8 @@ describe('runSync — idempotent re-run', () => {
       }],
     });
 
-    const r1 = await runSync({ phasesData, github: github1, milestoneTitle: 'v1.0' });
-    const r2 = await runSync({ phasesData, github: github2, milestoneTitle: 'v1.0' });
+    const r1 = runSync({ phasesData, github: github1, milestoneTitle: 'v1.0' });
+    const r2 = runSync({ phasesData, github: github2, milestoneTitle: 'v1.0' });
 
     assert.equal(r1.created.length, r2.created.length);
     assert.equal(r1.updated.length, r2.updated.length);
@@ -327,7 +340,7 @@ describe('runSync — idempotent re-run', () => {
 // ---------------------------------------------------------------------------
 
 describe('runSync — per-phase error isolation', () => {
-  it('one phase throwing does not prevent other phases from being processed', async () => {
+  it('one phase throwing does not prevent other phases from being processed', () => {
     let callCount = 0;
     const github = makeFakeGitHub({
       findIssueByMarker: (phaseNumber) => {
@@ -341,7 +354,7 @@ describe('runSync — per-phase error isolation', () => {
     });
 
     const phasesData = makePhasesData(); // phases 1 and 2
-    const receipt = await runSync({ phasesData, github, milestoneTitle: 'v1.0' });
+    const receipt = runSync({ phasesData, github, milestoneTitle: 'v1.0' });
 
     assert.equal(receipt.errors.length, 1, 'one error must be recorded');
     assert.equal(receipt.errors[0].phase, 1, 'error must be attributed to phase 1');
@@ -349,7 +362,7 @@ describe('runSync — per-phase error isolation', () => {
     assert.equal(receipt.created.length, 1, 'phase 2 must still be created');
   });
 
-  it('error in ensureMilestone does not abort phase processing', async () => {
+  it('error in ensureMilestone does not abort phase processing', () => {
     const github = makeFakeGitHub({
       ensureMilestone: () => { throw new Error('milestone API failure'); },
       findIssueByMarker: null,
@@ -358,7 +371,7 @@ describe('runSync — per-phase error isolation', () => {
 
     const phasesData = makePhasesData();
     // Should not throw; receipt must still have created phases
-    const receipt = await runSync({ phasesData, github, milestoneTitle: 'v1.0' });
+    const receipt = runSync({ phasesData, github, milestoneTitle: 'v1.0' });
     // milestone error is tolerated; phases still processed
     assert.equal(receipt.created.length, 2);
   });
@@ -369,36 +382,36 @@ describe('runSync — per-phase error isolation', () => {
 // ---------------------------------------------------------------------------
 
 describe('runSync — ensureMilestone', () => {
-  it('calls ensureMilestone once when milestones[0] exists', async () => {
+  it('calls ensureMilestone once when milestones[0] exists', () => {
     const github = makeFakeGitHub({ findIssueByMarker: null, createIssue: { number: 1 } });
     const phasesData = makePhasesData(); // has milestones[0]
 
-    await runSync({ phasesData, github, milestoneTitle: 'v1.0 Launch' });
+    runSync({ phasesData, github, milestoneTitle: 'v1.0 Launch' });
 
     assert.equal(github.calls.ensureMilestone.length, 1);
     assert.equal(github.calls.ensureMilestone[0].title, 'v1.0 Launch');
   });
 
-  it('does NOT call ensureMilestone when milestones array is empty', async () => {
+  it('does NOT call ensureMilestone when milestones array is empty', () => {
     const github = makeFakeGitHub({ findIssueByMarker: null, createIssue: { number: 1 } });
     const phasesData = makePhasesData({ milestones: [] });
 
-    await runSync({ phasesData, github, milestoneTitle: 'v1.0' });
+    runSync({ phasesData, github, milestoneTitle: 'v1.0' });
 
     assert.equal(github.calls.ensureMilestone.length, 0);
   });
 
-  it('receipt.milestone reflects the milestoneTitle when milestones exist', async () => {
+  it('receipt.milestone reflects the milestoneTitle when milestones exist', () => {
     const github = makeFakeGitHub({ findIssueByMarker: null, createIssue: { number: 1 } });
     const phasesData = makePhasesData();
-    const receipt = await runSync({ phasesData, github, milestoneTitle: 'v1.0 Launch' });
+    const receipt = runSync({ phasesData, github, milestoneTitle: 'v1.0 Launch' });
     assert.equal(receipt.milestone, 'v1.0 Launch');
   });
 
-  it('receipt.milestone is null when milestones array is empty', async () => {
+  it('receipt.milestone is null when milestones array is empty', () => {
     const github = makeFakeGitHub({ findIssueByMarker: null, createIssue: { number: 1 } });
     const phasesData = makePhasesData({ milestones: [] });
-    const receipt = await runSync({ phasesData, github, milestoneTitle: 'v1.0' });
+    const receipt = runSync({ phasesData, github, milestoneTitle: 'v1.0' });
     assert.equal(receipt.milestone, null);
   });
 });
@@ -408,9 +421,9 @@ describe('runSync — ensureMilestone', () => {
 // ---------------------------------------------------------------------------
 
 describe('runSync — receipt shape', () => {
-  it('receipt always has all required keys', async () => {
+  it('receipt always has all required keys', () => {
     const github = makeFakeGitHub({ findIssueByMarker: null, createIssue: { number: 1 } });
-    const receipt = await runSync({ phasesData: makePhasesData(), github, milestoneTitle: 'v1.0' });
+    const receipt = runSync({ phasesData: makePhasesData(), github, milestoneTitle: 'v1.0' });
 
     assert.ok(Array.isArray(receipt.created), 'receipt.created must be array');
     assert.ok(Array.isArray(receipt.updated), 'receipt.updated must be array');
@@ -426,10 +439,10 @@ describe('runSync — receipt shape', () => {
 // ---------------------------------------------------------------------------
 
 describe('runSync — board flag deferred', () => {
-  it('sync() result does not throw when called (contract test via runSync)', async () => {
+  it('sync() result does not throw when called (contract test via runSync)', () => {
     // board wiring is in the router, not runSync; runSync itself has no board param
     const github = makeFakeGitHub({ findIssueByMarker: null, createIssue: { number: 1 } });
-    const receipt = await runSync({ phasesData: makePhasesData(), github, milestoneTitle: 'v1.0' });
+    const receipt = runSync({ phasesData: makePhasesData(), github, milestoneTitle: 'v1.0' });
     assert.ok(receipt, 'receipt must be returned');
   });
 });

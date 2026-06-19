@@ -6,6 +6,11 @@
  * GSD capability router for the `projects-sync` family.
  * Standard router signature: routeProjectsSyncCommand({ args, cwd, raw, error, deps })
  *
+ * The dispatcher passes args = process.argv.slice(2), so:
+ *   args[0] === 'projects-sync'  (family name)
+ *   args[1] === subcommand       (sync | status | init)
+ *   args[2..] === flags/positionals
+ *
  * Subcommands:
  *   sync   — run full sync, write SYNC-RECEIPT.json
  *   status — dry run: report what would change, no mutations, no writes
@@ -110,11 +115,11 @@ function humanSummary(receipt) {
 // Subcommand: status (dry run)
 // ---------------------------------------------------------------------------
 
-async function runStatus({ cwd, args, raw, deps }) {
+function runStatus({ cwd, flagArgs, raw, deps }) {
   const { loadPhases: lp, createGitHubClient: cgc, log, exec } = deps;
-  const repo = resolveRepo(args, exec);
+  const repo = resolveRepo(flagArgs, exec);
 
-  const phasesData = await lp({ cwd, exec });
+  const phasesData = lp({ cwd, exec });
   const github = cgc({ repo, exec });
 
   // Build a dry-run report: inspect each phase without mutating
@@ -127,7 +132,7 @@ async function runStatus({ cwd, args, raw, deps }) {
   for (const phase of phasesData.phases) {
     const { state: targetState, label } = statusForPhase(phase);
     const marker = phaseMarker(phase.number);
-    const existing = await github.findIssueByMarker(phase.number);
+    const existing = github.findIssueByMarker(phase.number);
 
     let action;
     if (!existing) {
@@ -166,12 +171,12 @@ async function runStatus({ cwd, args, raw, deps }) {
 // Subcommand: sync / init
 // ---------------------------------------------------------------------------
 
-async function runSyncCommand({ cwd, args, raw, deps, subcommand }) {
+function runSyncCommand({ cwd, flagArgs, raw, deps, subcommand }) {
   const { sync: syncFn, log, writeFile, mkdirp, exec } = deps;
-  const repo = resolveRepo(args, exec);
-  const board = parseBoardFlag(args);
+  const repo = resolveRepo(flagArgs, exec);
+  const board = parseBoardFlag(flagArgs);
 
-  const receipt = await syncFn({ cwd, repo, exec, board });
+  const receipt = syncFn({ cwd, repo, exec, board });
 
   // Write receipt to disk
   const receiptPath = path.join(cwd, RECEIPT_SUBPATH);
@@ -199,15 +204,20 @@ async function runSyncCommand({ cwd, args, raw, deps, subcommand }) {
 /**
  * Routes a projects-sync capability command.
  *
+ * The dispatcher passes args = process.argv.slice(2), so:
+ *   args[0] === 'projects-sync'  (family name)
+ *   args[1] === subcommand
+ *   args[2..] === flags/positionals
+ *
  * @param {object} options
- * @param {string[]} options.args    — argv AFTER the family name
+ * @param {string[]} options.args    — full argv slice (args[0] is the family name)
  * @param {string}   options.cwd    — project root
  * @param {boolean}  options.raw    — emit JSON instead of human prose
  * @param {Function} options.error  — (msg: string) => void; called for user errors
  * @param {object}   [options.deps] — injectable collaborators (for testing)
- * @returns {Promise<object>}
+ * @returns {object}
  */
-async function routeProjectsSyncCommand({ args = [], cwd, raw = false, error, deps = {} }) {
+function routeProjectsSyncCommand({ args = [], cwd, raw = false, error, deps = {} }) {
   // --- Build effective deps (defaults + injected overrides) -----------------
   const effectiveDeps = {
     sync: engineSync,
@@ -220,22 +230,26 @@ async function routeProjectsSyncCommand({ args = [], cwd, raw = false, error, de
     ...deps,
   };
 
-  const subcommand = args[0];
+  // args[0] is the family name ('projects-sync'), args[1] is the subcommand
+  const subcommand = args[1];
+  // flags/positionals start at args[2]
+  const flagArgs = args.slice(2);
 
   // --- Route ----------------------------------------------------------------
   switch (subcommand) {
     case 'sync':
-      return runSyncCommand({ cwd, args, raw, deps: effectiveDeps, subcommand: 'sync' });
+      return runSyncCommand({ cwd, flagArgs, raw, deps: effectiveDeps, subcommand: 'sync' });
 
     case 'init':
-      return runSyncCommand({ cwd, args, raw, deps: effectiveDeps, subcommand: 'init' });
+      return runSyncCommand({ cwd, flagArgs, raw, deps: effectiveDeps, subcommand: 'init' });
 
     case 'status':
-      return runStatus({ cwd, args, raw, deps: effectiveDeps });
+      return runStatus({ cwd, flagArgs, raw, deps: effectiveDeps });
 
     default: {
-      const msg = `projects-sync: unknown subcommand "${subcommand ?? ''}". `
-        + `Available subcommands: ${VALID_SUBCOMMANDS.join(', ')}.`;
+      const msg = subcommand
+        ? `projects-sync: unknown subcommand "${subcommand}". Available: ${VALID_SUBCOMMANDS.join(', ')}`
+        : `projects-sync: no subcommand given. Available: ${VALID_SUBCOMMANDS.join(', ')}`;
       error(msg);
       return { ok: false, error: msg };
     }
