@@ -175,6 +175,15 @@ describe('runSync — create path (no existing issues)', () => {
     assert.ok(firstCreate.labels.includes('gsd:pending'), 'pending phase must carry gsd:pending label');
   });
 
+  it('F3: createIssue receives the milestoneTitle', () => {
+    const github = makeFakeGitHub({ findIssueByMarker: null, createIssue: { number: 10 } });
+    const phasesData = makePhasesData();
+    runSync({ phasesData, github, milestoneTitle: 'v1.0 Launch' });
+
+    const firstCreate = github.calls.createIssue[0];
+    assert.equal(firstCreate.milestone, 'v1.0 Launch', 'createIssue must receive the milestoneTitle');
+  });
+
   it('createIssue receives the correct label for an in-progress phase', () => {
     const github = makeFakeGitHub({ findIssueByMarker: null, createIssue: { number: 10 } });
     const phasesData = makePhasesData();
@@ -239,6 +248,19 @@ describe('runSync — update path (existing open issue, still open)', () => {
 
     runSync({ phasesData, github, milestoneTitle: 'v1.0' });
     assert.equal(github.calls.updateIssue[0].number, 77);
+  });
+
+  it('F3: updateIssue receives the milestoneTitle', () => {
+    const existing = { number: 77, state: 'open', title: 'Phase 1: Foundation' };
+    const github = makeFakeGitHub({ findIssueByMarker: existing });
+    const phasesData = makePhasesData({
+      phases: [{
+        number: 1, name: 'Foundation', goal: 'Set up.', complete: false, disk_status: null, plan_count: 0,
+      }],
+    });
+
+    runSync({ phasesData, github, milestoneTitle: 'v1.0 Launch' });
+    assert.equal(github.calls.updateIssue[0].milestone, 'v1.0 Launch', 'updateIssue must receive the milestoneTitle');
   });
 });
 

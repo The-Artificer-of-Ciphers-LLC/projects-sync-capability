@@ -49,21 +49,23 @@ describe('findIssueByMarker', () => {
     const client = createGitHubClient({ repo: REPO, exec: mockExec });
     client.findIssueByMarker(3);
     const argv = mockExec.calls[0];
-    const marker = '<!-- gsd-phase:3 -->';
     assert.ok(
       argv.some((a) => a.includes('gsd-phase:3')),
       `argv should include marker text "gsd-phase:3": ${JSON.stringify(argv)}`
     );
   });
 
-  it('passes --json flag with at least number,state,title fields', () => {
+  it('passes --json flag with number,state,title,body fields (F5: body required for exact-match)', () => {
     const mockExec = makeMockExec(JSON.stringify([]));
     const client = createGitHubClient({ repo: REPO, exec: mockExec });
     client.findIssueByMarker(1);
     const argv = mockExec.calls[0];
-    const jsonArg = argv.find((a) => a.startsWith('number') || a === 'number,state,title' || a.includes('number'));
-    // The --json flag must appear
     assert.ok(argv.includes('--json'), `argv should include "--json": ${JSON.stringify(argv)}`);
+    const jsonVal = argv[argv.indexOf('--json') + 1];
+    assert.ok(jsonVal.includes('body'), `--json value must include "body" field: ${jsonVal}`);
+    assert.ok(jsonVal.includes('number'), `--json value must include "number" field: ${jsonVal}`);
+    assert.ok(jsonVal.includes('state'), `--json value must include "state" field: ${jsonVal}`);
+    assert.ok(jsonVal.includes('title'), `--json value must include "title" field: ${jsonVal}`);
   });
 
   it('returns null when the result list is empty', () => {
@@ -73,21 +75,56 @@ describe('findIssueByMarker', () => {
     assert.equal(result, null);
   });
 
-  it('returns the first issue {number,state,title} when results exist', () => {
+  it('F5: returns null when result body does NOT contain the exact marker (false-positive filter)', () => {
+    // body contains a different phase marker — should be filtered out
     const issues = [
-      { number: 42, state: 'open', title: 'Phase 1: Foundation' },
-      { number: 43, state: 'closed', title: 'Phase 1 (old)' },
+      { number: 42, state: 'open', title: 'Phase 10: Other', body: '<!-- gsd-phase:10 --> some text' },
+    ];
+    const mockExec = makeMockExec(JSON.stringify(issues));
+    const client = createGitHubClient({ repo: REPO, exec: mockExec });
+    // searching for phase 1 — body only has phase:10 marker, no exact match
+    const result = client.findIssueByMarker(1);
+    assert.equal(result, null, 'must return null when body does not contain the exact marker');
+  });
+
+  it('F5: returns the exact-match issue when body contains the correct marker', () => {
+    const marker = '<!-- gsd-phase:1 -->';
+    const issues = [
+      { number: 42, state: 'open', title: 'Phase 1: Foundation', body: `some text\n${marker}\nmore text` },
     ];
     const mockExec = makeMockExec(JSON.stringify(issues));
     const client = createGitHubClient({ repo: REPO, exec: mockExec });
     const result = client.findIssueByMarker(1);
+    assert.ok(result !== null, 'must return an issue when body contains the exact marker');
     assert.equal(result.number, 42);
-    assert.equal(result.state, 'open');
-    assert.equal(result.title, 'Phase 1: Foundation');
+  });
+
+  it('F5: multiple exact matches → returns lowest issue number (deterministic)', () => {
+    const marker = '<!-- gsd-phase:2 -->';
+    const issues = [
+      { number: 55, state: 'open', title: 'Phase 2 (dup)', body: `${marker}` },
+      { number: 33, state: 'open', title: 'Phase 2', body: `text ${marker} text` },
+    ];
+    const mockExec = makeMockExec(JSON.stringify(issues));
+    const client = createGitHubClient({ repo: REPO, exec: mockExec });
+    const result = client.findIssueByMarker(2);
+    assert.equal(result.number, 33, 'must return the issue with the lowest number');
+  });
+
+  it('F5: a result whose body is missing the exact marker is ignored even if title matches', () => {
+    const issues = [
+      // body has gsd-phase:11 not gsd-phase:1; title mentions Phase 1 but body doesn't have the exact marker
+      { number: 9, state: 'open', title: 'Phase 1: Foundation', body: '<!-- gsd-phase:11 --> some body' },
+    ];
+    const mockExec = makeMockExec(JSON.stringify(issues));
+    const client = createGitHubClient({ repo: REPO, exec: mockExec });
+    const result = client.findIssueByMarker(1);
+    assert.equal(result, null, 'issue without exact marker in body must be ignored');
   });
 
   it('returns exactly {number,state,title} — no extra keys', () => {
-    const issues = [{ number: 7, state: 'closed', title: 'X', extraField: 'should not leak' }];
+    const marker = '<!-- gsd-phase:1 -->';
+    const issues = [{ number: 7, state: 'closed', title: 'X', body: marker, extraField: 'should not leak' }];
     const mockExec = makeMockExec(JSON.stringify(issues));
     const client = createGitHubClient({ repo: REPO, exec: mockExec });
     const result = client.findIssueByMarker(1);
@@ -104,6 +141,20 @@ describe('findIssueByMarker', () => {
       argv.some((a) => a.includes('gsd-phase:0')),
       `argv should include "gsd-phase:0": ${JSON.stringify(argv)}`
     );
+  });
+
+  it('F6: returns null (not throw) when exec returns non-JSON', () => {
+    const mockExec = makeMockExec('not-json-at-all');
+    const client = createGitHubClient({ repo: REPO, exec: mockExec });
+    const result = client.findIssueByMarker(1);
+    assert.equal(result, null, 'non-JSON response must return null gracefully');
+  });
+
+  it('F6: returns null when exec returns a non-array JSON value', () => {
+    const mockExec = makeMockExec(JSON.stringify({ error: 'something went wrong' }));
+    const client = createGitHubClient({ repo: REPO, exec: mockExec });
+    const result = client.findIssueByMarker(1);
+    assert.equal(result, null, 'non-array response must be treated as empty results');
   });
 });
 
@@ -170,6 +221,37 @@ describe('createIssue', () => {
     const argv = mockExec.calls[0];
     assert.ok(!argv.includes('--label'), `argv should NOT include --label for empty labels: ${JSON.stringify(argv)}`);
   });
+
+  it('F3: passes --milestone when milestone is provided', () => {
+    const mockExec = makeMockExec('https://github.com/acme/my-project/issues/5\n');
+    const client = createGitHubClient({ repo: REPO, exec: mockExec });
+    client.createIssue({ title: 'T', body: 'b', labels: [], milestone: 'v1.0 Launch' });
+    const argv = mockExec.calls[0];
+    assert.ok(argv.includes('--milestone'), `argv must include --milestone: ${JSON.stringify(argv)}`);
+    const mIdx = argv.indexOf('--milestone');
+    assert.equal(argv[mIdx + 1], 'v1.0 Launch');
+  });
+
+  it('F3: does not pass --milestone when milestone is not provided', () => {
+    const mockExec = makeMockExec('https://github.com/acme/my-project/issues/5\n');
+    const client = createGitHubClient({ repo: REPO, exec: mockExec });
+    client.createIssue({ title: 'T', body: 'b', labels: [] });
+    const argv = mockExec.calls[0];
+    assert.ok(!argv.includes('--milestone'), `argv must NOT include --milestone when not provided: ${JSON.stringify(argv)}`);
+  });
+
+  it('F6: throws a clear error when gh returns an unparseable URL', () => {
+    const mockExec = makeMockExec('not-a-url-at-all');
+    const client = createGitHubClient({ repo: REPO, exec: mockExec });
+    assert.throws(
+      () => client.createIssue({ title: 'T', body: 'b', labels: [] }),
+      (err) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.includes('could not parse issue number'), `error message: ${err.message}`);
+        return true;
+      }
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -198,12 +280,46 @@ describe('updateIssue', () => {
     assert.equal(argv[bodyIdx + 1], 'updated body');
   });
 
-  it('passes --label when labels are provided', () => {
+  it('F2: uses --add-label (not --label) when labels are provided', () => {
     const mockExec = makeMockExec('');
     const client = createGitHubClient({ repo: REPO, exec: mockExec });
     client.updateIssue(10, { body: 'b', labels: ['gsd:in-progress'] });
     const argv = mockExec.calls[0];
-    assert.ok(argv.includes('--label') || argv.includes('--add-label'), `argv missing label flag: ${JSON.stringify(argv)}`);
+    assert.ok(argv.includes('--add-label'), `argv must use --add-label: ${JSON.stringify(argv)}`);
+    assert.ok(!argv.includes('--label') || argv.includes('--add-label'),
+      `argv must NOT use bare --label (only --add-label / --remove-label): ${JSON.stringify(argv)}`);
+    // verify the label value follows --add-label
+    const addIdx = argv.indexOf('--add-label');
+    assert.equal(argv[addIdx + 1], 'gsd:in-progress');
+  });
+
+  it('F2: uses --remove-label for all other GSD status labels when adding one label', () => {
+    const mockExec = makeMockExec('');
+    const client = createGitHubClient({ repo: REPO, exec: mockExec });
+    // adding gsd:complete — all other GSD status labels must be removed
+    client.updateIssue(10, { body: 'b', labels: ['gsd:complete'] });
+    const argv = mockExec.calls[0];
+    const removeLabels = [];
+    for (let i = 0; i < argv.length; i++) {
+      if (argv[i] === '--remove-label') removeLabels.push(argv[i + 1]);
+    }
+    // Must remove the other 4 GSD status labels
+    assert.ok(removeLabels.includes('gsd:in-progress'), `must remove gsd:in-progress: ${JSON.stringify(removeLabels)}`);
+    assert.ok(removeLabels.includes('gsd:pending'), `must remove gsd:pending: ${JSON.stringify(removeLabels)}`);
+    assert.ok(removeLabels.includes('gsd:blocked'), `must remove gsd:blocked: ${JSON.stringify(removeLabels)}`);
+    assert.ok(removeLabels.includes('gsd:human-gate'), `must remove gsd:human-gate: ${JSON.stringify(removeLabels)}`);
+    // Must NOT remove the label being added
+    assert.ok(!removeLabels.includes('gsd:complete'), `must NOT remove gsd:complete: ${JSON.stringify(removeLabels)}`);
+  });
+
+  it('F2: does NOT include bare --label in updateIssue argv (gh issue edit rejects --label)', () => {
+    const mockExec = makeMockExec('');
+    const client = createGitHubClient({ repo: REPO, exec: mockExec });
+    client.updateIssue(10, { body: 'b', labels: ['gsd:pending'] });
+    const argv = mockExec.calls[0];
+    // Scan for bare '--label' that is not '--add-label' or '--remove-label'
+    const hasBareLabelFlag = argv.some((a, i) => a === '--label');
+    assert.ok(!hasBareLabelFlag, `argv must NOT contain bare --label flag: ${JSON.stringify(argv)}`);
   });
 
   it('passes the repo flag', () => {
@@ -212,6 +328,36 @@ describe('updateIssue', () => {
     client.updateIssue(10, { body: 'b', labels: [] });
     const argv = mockExec.calls[0];
     assert.ok(argv.includes(REPO), `argv should include repo "${REPO}": ${JSON.stringify(argv)}`);
+  });
+
+  it('F3: passes --milestone when milestone is provided', () => {
+    const mockExec = makeMockExec('');
+    const client = createGitHubClient({ repo: REPO, exec: mockExec });
+    client.updateIssue(10, { body: 'b', labels: [], milestone: 'v1.0 Launch' });
+    const argv = mockExec.calls[0];
+    assert.ok(argv.includes('--milestone'), `argv must include --milestone: ${JSON.stringify(argv)}`);
+    const mIdx = argv.indexOf('--milestone');
+    assert.equal(argv[mIdx + 1], 'v1.0 Launch');
+  });
+
+  it('F3: does not pass --milestone when milestone is not provided', () => {
+    const mockExec = makeMockExec('');
+    const client = createGitHubClient({ repo: REPO, exec: mockExec });
+    client.updateIssue(10, { body: 'b', labels: [] });
+    const argv = mockExec.calls[0];
+    assert.ok(!argv.includes('--milestone'), `argv must NOT include --milestone when not provided: ${JSON.stringify(argv)}`);
+  });
+
+  it('F6: throws when number is undefined', () => {
+    const mockExec = makeMockExec('');
+    const client = createGitHubClient({ repo: REPO, exec: mockExec });
+    assert.throws(
+      () => client.updateIssue(undefined, { body: 'b', labels: [] }),
+      (err) => {
+        assert.ok(err instanceof Error);
+        return true;
+      }
+    );
   });
 });
 
@@ -271,6 +417,18 @@ describe('setIssueState', () => {
       }
     );
   });
+
+  it('F6: throws when number is undefined', () => {
+    const mockExec = makeMockExec('');
+    const client = createGitHubClient({ repo: REPO, exec: mockExec });
+    assert.throws(
+      () => client.setIssueState(undefined, 'closed'),
+      (err) => {
+        assert.ok(err instanceof Error);
+        return true;
+      }
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -317,6 +475,26 @@ describe('ensureMilestone', () => {
     assert.equal(num, 4);
   });
 
+  it('F1: create call uses --raw-field (not --field) to prevent @ file expansion', () => {
+    const listResponse = JSON.stringify([]);
+    const createResponse = JSON.stringify({ number: 5, title: '@v2.0' });
+    const mockExec = makeMockExec([listResponse, createResponse]);
+    const client = createGitHubClient({ repo: REPO, exec: mockExec });
+    client.ensureMilestone('@v2.0');
+    const createArgv = mockExec.calls[1];
+    assert.ok(
+      createArgv.includes('--raw-field'),
+      `create call must use --raw-field (not --field): ${JSON.stringify(createArgv)}`
+    );
+    assert.ok(
+      !createArgv.includes('--field') || createArgv.includes('--raw-field'),
+      `create call must NOT use bare --field: ${JSON.stringify(createArgv)}`
+    );
+    // The --raw-field value must include the title
+    const rawFieldVal = createArgv[createArgv.indexOf('--raw-field') + 1];
+    assert.ok(rawFieldVal.includes('@v2.0'), `--raw-field value must include title: ${rawFieldVal}`);
+  });
+
   it('create call includes the milestone title', () => {
     const listResponse = JSON.stringify([]);
     const createResponse = JSON.stringify({ number: 5, title: 'v2.0' });
@@ -346,6 +524,45 @@ describe('ensureMilestone', () => {
     const client = createGitHubClient({ repo: REPO, exec: mockExec });
     const num = client.ensureMilestone('v1.0');
     assert.equal(typeof num, 'number');
+  });
+
+  it('F6: treats non-array list response as empty (no throw, proceeds to create)', () => {
+    const listResponse = JSON.stringify({ error: 'not an array' });
+    const createResponse = JSON.stringify({ number: 9, title: 'v3.0' });
+    const mockExec = makeMockExec([listResponse, createResponse]);
+    const client = createGitHubClient({ repo: REPO, exec: mockExec });
+    // should not throw, should proceed to create
+    const num = client.ensureMilestone('v3.0');
+    assert.equal(num, 9, 'should create milestone and return its number');
+  });
+
+  it('F6: throws a clear error when create response has no valid number', () => {
+    const listResponse = JSON.stringify([]);
+    const createResponse = JSON.stringify({ title: 'v4.0' }); // missing number
+    const mockExec = makeMockExec([listResponse, createResponse]);
+    const client = createGitHubClient({ repo: REPO, exec: mockExec });
+    assert.throws(
+      () => client.ensureMilestone('v4.0'),
+      (err) => {
+        assert.ok(err instanceof Error);
+        assert.ok(err.message.includes('invalid number') || err.message.includes('ensureMilestone'),
+          `error message: ${err.message}`);
+        return true;
+      }
+    );
+  });
+
+  it('F6: throws a clear error when create response is not valid JSON', () => {
+    const listResponse = JSON.stringify([]);
+    const mockExec = makeMockExec([listResponse, 'bad json{{{']);
+    const client = createGitHubClient({ repo: REPO, exec: mockExec });
+    assert.throws(
+      () => client.ensureMilestone('v5.0'),
+      (err) => {
+        assert.ok(err instanceof Error);
+        return true;
+      }
+    );
   });
 });
 

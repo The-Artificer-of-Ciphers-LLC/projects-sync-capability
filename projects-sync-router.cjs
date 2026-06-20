@@ -29,12 +29,12 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
 
 const { sync: engineSync } = require('./lib/sync-engine.cjs');
 const { loadPhases } = require('./lib/roadmap-source.cjs');
 const { createGitHubClient } = require('./lib/github-client.cjs');
 const { statusForPhase, phaseMarker } = require('./lib/markers.cjs');
+const { makeDefaultGhExec, makeDefaultGsdExec } = require('./lib/exec-factories.cjs');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -82,28 +82,6 @@ function resolveRepo(args, ghExec) {
   throw new Error(`projects-sync-router: could not resolve repo. Pass --repo owner/name.`);
 }
 
-/**
- * Default exec for gh CLI (github-client methods + resolveRepo).
- */
-function defaultGhExec(argv) {
-  return execFileSync('gh', argv, { encoding: 'utf8' });
-}
-
-/**
- * Default exec for gsd-tools CLI (loadPhases).
- * Re-invokes the running gsd-tools entry point when possible so the capability
- * does not depend on `gsd-tools` being on PATH separately.
- */
-function defaultGsdExec(argv) {
-  const bin = process.env.GSD_TOOLS_BIN;
-  if (bin) {
-    return execFileSync(bin, argv, { encoding: 'utf8' });
-  }
-  if (process.argv && process.argv[1]) {
-    return execFileSync(process.execPath, [process.argv[1], ...argv], { encoding: 'utf8' });
-  }
-  return execFileSync('gsd-tools', argv, { encoding: 'utf8' });
-}
 
 /**
  * Human-readable summary line for a receipt.
@@ -135,7 +113,19 @@ function humanSummary(receipt) {
 
 function runStatus({ cwd, flagArgs, raw, deps }) {
   const { loadPhases: lp, createGitHubClient: cgc, log, gsdExec, ghExec } = deps;
-  const repo = resolveRepo(flagArgs, ghExec);
+
+  // F4: fail-open for status (no write, just return error report)
+  let repo;
+  try {
+    repo = resolveRepo(flagArgs, ghExec);
+  } catch (resolveErr) {
+    const errMsg = String(resolveErr.message ?? resolveErr);
+    log(`projects-sync: could not resolve repository — ${errMsg}`);
+    return {
+      ok: false,
+      receipt: makeResolveRepoErrorReceipt(errMsg),
+    };
+  }
 
   const phasesData = lp({ cwd, exec: gsdExec });
   const github = cgc({ repo, exec: ghExec });
@@ -186,12 +176,47 @@ function runStatus({ cwd, flagArgs, raw, deps }) {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers for fail-open receipt writing
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds an empty fail-open receipt with a single error entry.
+ * Used when resolveRepo throws before sync can start.
+ */
+function makeResolveRepoErrorReceipt(errMsg) {
+  return {
+    created: [],
+    updated: [],
+    closed: [],
+    skipped: [],
+    errors: [{ phase: null, kind: 'resolveRepo', error: errMsg }],
+    milestone: null,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Subcommand: sync / init
 // ---------------------------------------------------------------------------
 
 function runSyncCommand({ cwd, flagArgs, raw, deps, subcommand }) {
   const { sync: syncFn, log, writeFile, mkdirp, gsdExec, ghExec } = deps;
-  const repo = resolveRepo(flagArgs, ghExec);
+
+  // F4: wrap resolveRepo so a failure does NOT throw out of the router
+  let repo;
+  try {
+    repo = resolveRepo(flagArgs, ghExec);
+  } catch (resolveErr) {
+    const errMsg = String(resolveErr.message ?? resolveErr);
+    log(`projects-sync: could not resolve repository — ${errMsg}`);
+    const receipt = makeResolveRepoErrorReceipt(errMsg);
+    // Still write the receipt so callers can inspect the failure
+    const receiptPath = path.join(cwd, RECEIPT_SUBPATH);
+    const receiptDir = path.dirname(receiptPath);
+    try { mkdirp(receiptDir); } catch { /* best-effort */ }
+    try { writeFile(receiptPath, JSON.stringify(receipt, null, 2)); } catch { /* best-effort */ }
+    return { ok: false, receipt };
+  }
+
   const board = parseBoardFlag(flagArgs);
 
   const receipt = syncFn({ cwd, repo, gsdExec, ghExec, board });
@@ -237,6 +262,9 @@ function runSyncCommand({ cwd, flagArgs, raw, deps, subcommand }) {
  */
 function routeProjectsSyncCommand({ args = [], cwd, raw = false, error, deps = {} }) {
   // --- Build effective deps (defaults + injected overrides) -----------------
+  // Default exec factories bind the child process cwd to the GSD project
+  // directory so that `gh repo view` auto-detection resolves the correct repo
+  // (not whatever git repo the Node process happens to sit in).
   const effectiveDeps = {
     sync: engineSync,
     loadPhases,
@@ -244,8 +272,8 @@ function routeProjectsSyncCommand({ args = [], cwd, raw = false, error, deps = {
     writeFile: (filePath, content) => fs.writeFileSync(filePath, content, 'utf8'),
     mkdirp: (dir) => fs.mkdirSync(dir, { recursive: true }),
     log: (msg) => console.log(msg),
-    gsdExec: defaultGsdExec,
-    ghExec: defaultGhExec,
+    gsdExec: makeDefaultGsdExec(cwd),
+    ghExec: makeDefaultGhExec(cwd),
     ...deps,
   };
 
@@ -279,4 +307,4 @@ function routeProjectsSyncCommand({ args = [], cwd, raw = false, error, deps = {
 // Exports
 // ---------------------------------------------------------------------------
 
-module.exports = { routeProjectsSyncCommand };
+module.exports = { routeProjectsSyncCommand, makeDefaultGhExec, makeDefaultGsdExec };

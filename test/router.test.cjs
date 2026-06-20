@@ -412,6 +412,67 @@ describe('routeProjectsSyncCommand — init subcommand', () => {
 });
 
 // ---------------------------------------------------------------------------
+// F4: resolveRepo fail-open
+// ---------------------------------------------------------------------------
+
+describe('routeProjectsSyncCommand — F4 resolveRepo fail-open', () => {
+  it('sync: does not throw when ghExec throws on repo view (no --repo given)', () => {
+    let threw = false;
+    let result;
+    try {
+      const { result: r } = runRouter(['projects-sync', 'sync'], {
+        ghExec: () => { throw new Error('gh repo view failed: not a git repo'); },
+        sync: () => fakeReceipt, // should never be reached
+      });
+      result = r;
+    } catch {
+      threw = true;
+    }
+    assert.ok(!threw, 'router must NOT throw when resolveRepo fails');
+    assert.ok(result !== undefined, 'router must return a result');
+    assert.equal(result.ok, false, 'result.ok must be false on resolveRepo failure');
+  });
+
+  it('sync: fail-open receipt has error with kind===resolveRepo', () => {
+    const { result } = runRouter(['projects-sync', 'sync'], {
+      ghExec: () => { throw new Error('auth error'); },
+      sync: () => { throw new Error('sync must not be called'); },
+    });
+    assert.ok(result.receipt, 'result must have a receipt');
+    const errors = result.receipt.errors;
+    assert.ok(Array.isArray(errors) && errors.length > 0, 'receipt.errors must be non-empty');
+    assert.equal(errors[0].kind, 'resolveRepo', `error kind must be "resolveRepo": ${JSON.stringify(errors[0])}`);
+    assert.ok(typeof errors[0].error === 'string', 'error.error must be a string');
+  });
+
+  it('sync: fail-open receipt is written to SYNC-RECEIPT.json', () => {
+    const { deps } = runRouter(['projects-sync', 'sync'], {
+      ghExec: () => { throw new Error('auth error'); },
+      sync: () => { throw new Error('sync must not be called'); },
+    });
+    // writeFile should have been called with the receipt path
+    assert.ok(deps._writes.length > 0, 'receipt must be written even on resolveRepo failure');
+    const write = deps._writes[0];
+    const parsed = JSON.parse(write.content);
+    assert.ok(Array.isArray(parsed.errors) && parsed.errors.length > 0, 'written receipt must contain errors');
+    assert.equal(parsed.errors[0].kind, 'resolveRepo');
+  });
+
+  it('sync: fail-open receipt arrays are all empty except errors', () => {
+    const { result } = runRouter(['projects-sync', 'sync'], {
+      ghExec: () => { throw new Error('auth error'); },
+      sync: () => { throw new Error('sync must not be called'); },
+    });
+    const r = result.receipt;
+    assert.deepEqual(r.created, []);
+    assert.deepEqual(r.updated, []);
+    assert.deepEqual(r.closed, []);
+    assert.deepEqual(r.skipped, []);
+    assert.equal(r.milestone, null);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // board flag deferred
 // ---------------------------------------------------------------------------
 
