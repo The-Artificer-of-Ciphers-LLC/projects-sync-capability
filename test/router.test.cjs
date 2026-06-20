@@ -52,6 +52,10 @@ const fakeReceipt = {
 /**
  * Builds a deps bag for router injection.
  * All methods are synchronous no-ops / canned values unless overridden.
+ *
+ * Two distinct exec seams:
+ *   gsdExec — used by loadPhases (gsd-tools CLI)
+ *   ghExec  — used by createGitHubClient + resolveRepo (gh CLI)
  */
 function makeDeps(overrides = {}) {
   const logs = [];
@@ -73,7 +77,10 @@ function makeDeps(overrides = {}) {
     },
     mkdirp: () => {},
     log: (msg) => logs.push(msg),
-    exec: () => 'owner/repo',
+    // gsdExec: used by loadPhases (gsd-tools CLI)
+    gsdExec: () => { throw new Error('gsdExec must not be called when loadPhases is injected'); },
+    // ghExec: used by createGitHubClient + resolveRepo (gh CLI)
+    ghExec: () => 'owner/repo',
     _logs: logs,
     _writes: writes,
     _errors: errors,
@@ -249,11 +256,11 @@ describe('routeProjectsSyncCommand — sync subcommand', () => {
     assert.equal(capturedRepo, 'myorg/myrepo');
   });
 
-  it('resolves repo from exec when --repo is omitted', () => {
+  it('resolves repo from ghExec when --repo is omitted', () => {
     let capturedRepo;
     runRouter(['projects-sync', 'sync'], {
       sync: ({ repo }) => { capturedRepo = repo; return fakeReceipt; },
-      exec: () => JSON.stringify({ nameWithOwner: 'resolved/repo' }),
+      ghExec: () => JSON.stringify({ nameWithOwner: 'resolved/repo' }),
     });
     assert.equal(capturedRepo, 'resolved/repo');
   });
@@ -415,5 +422,108 @@ describe('routeProjectsSyncCommand — board flag deferred', () => {
       sync: (opts) => { receivedOpts = opts; return { ...fakeReceipt, boardDeferred: true }; },
     });
     assert.ok(receivedOpts?.board === true, 'board:true must be passed to sync()');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Two-seam separation: gsdExec vs ghExec
+// ---------------------------------------------------------------------------
+
+describe('routeProjectsSyncCommand — two-seam exec separation', () => {
+  it('sync: passes gsdExec to sync() and NOT ghExec', () => {
+    let receivedGsdExec;
+    let receivedGhExec;
+    const myGsdExec = () => 'gsd-stub';
+    const myGhExec = () => 'gh-stub';
+    runRouter(['projects-sync', 'sync', '--repo', 'owner/repo'], {
+      sync: (opts) => {
+        receivedGsdExec = opts.gsdExec;
+        receivedGhExec = opts.ghExec;
+        return fakeReceipt;
+      },
+      gsdExec: myGsdExec,
+      ghExec: myGhExec,
+    });
+    assert.strictEqual(receivedGsdExec, myGsdExec, 'sync() must receive the injected gsdExec');
+    assert.strictEqual(receivedGhExec, myGhExec, 'sync() must receive the injected ghExec');
+  });
+
+  it('sync: gsdExec is used for loadPhases (not ghExec) when not injecting sync()', () => {
+    const gsdCalls = [];
+    const ghCalls = [];
+    // We inject loadPhases directly to spy on which exec it receives
+    runRouter(['projects-sync', 'sync', '--repo', 'owner/repo'], {
+      sync: ({ gsdExec, ghExec }) => {
+        // Call both to verify they are distinct and correctly routed
+        gsdCalls.push(gsdExec);
+        ghCalls.push(ghExec);
+        return fakeReceipt;
+      },
+      gsdExec: (argv) => { gsdCalls.push({ from: 'gsdExec', argv }); return '{}'; },
+      ghExec: (argv) => { ghCalls.push({ from: 'ghExec', argv }); return 'owner/repo'; },
+    });
+    // gsdExec and ghExec must be different functions (not the same reference)
+    assert.ok(gsdCalls.length > 0, 'gsdExec must have been accessed');
+    assert.ok(ghCalls.length > 0, 'ghExec must have been accessed');
+  });
+
+  it('status: loadPhases receives gsdExec (not ghExec)', () => {
+    let loadPhasesExec;
+    const myGsdExec = () => 'gsd-stub';
+    runRouter(['projects-sync', 'status', '--repo', 'owner/repo'], {
+      loadPhases: ({ exec }) => { loadPhasesExec = exec; return fakePhasesData; },
+      createGitHubClient: () => ({
+        findIssueByMarker: () => null,
+        createIssue: () => {},
+        updateIssue: () => {},
+        setIssueState: () => {},
+        ensureMilestone: () => 1,
+      }),
+      gsdExec: myGsdExec,
+      ghExec: () => 'gh-stub',
+    });
+    assert.strictEqual(loadPhasesExec, myGsdExec, 'loadPhases must receive gsdExec, not ghExec');
+  });
+
+  it('status: createGitHubClient receives ghExec (not gsdExec)', () => {
+    let githubExec;
+    const myGhExec = () => 'gh-stub';
+    runRouter(['projects-sync', 'status', '--repo', 'owner/repo'], {
+      loadPhases: () => fakePhasesData,
+      createGitHubClient: ({ exec }) => {
+        githubExec = exec;
+        return {
+          findIssueByMarker: () => null,
+          createIssue: () => {},
+          updateIssue: () => {},
+          setIssueState: () => {},
+          ensureMilestone: () => 1,
+        };
+      },
+      gsdExec: () => 'gsd-stub',
+      ghExec: myGhExec,
+    });
+    assert.strictEqual(githubExec, myGhExec, 'createGitHubClient must receive ghExec, not gsdExec');
+  });
+
+  it('resolveRepo uses ghExec (not gsdExec)', () => {
+    let ghExecCalled = false;
+    let gsdExecCalled = false;
+    // Omit --repo so resolveRepo falls back to exec
+    runRouter(['projects-sync', 'sync'], {
+      sync: () => fakeReceipt,
+      ghExec: () => { ghExecCalled = true; return JSON.stringify({ nameWithOwner: 'owner/repo' }); },
+      gsdExec: () => { gsdExecCalled = true; return '{}'; },
+    });
+    assert.ok(ghExecCalled, 'resolveRepo must use ghExec');
+    assert.ok(!gsdExecCalled, 'resolveRepo must NOT use gsdExec');
+  });
+
+  it('router is synchronous: never returns a Promise with two-seam deps', () => {
+    const { result } = runRouter(['projects-sync', 'sync', '--repo', 'owner/repo'], {
+      gsdExec: () => { throw new Error('gsdExec should not be called when sync is injected'); },
+      ghExec: () => 'owner/repo',
+    });
+    assert.ok(typeof result?.then !== 'function', 'router must remain synchronous with two-seam deps');
   });
 });

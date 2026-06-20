@@ -168,7 +168,7 @@ describe('loadPhases — exec argv shape', () => {
 describe('loadPhases — defensive validation', () => {
   it('throws a clear error when exec returns non-JSON', async () => {
     const exec = () => 'not valid json at all !!!';
-    await assert.rejects(
+    assert.throws(
       () => loadPhases({ cwd: '/fake', exec }),
       (err) => {
         assert.ok(err instanceof Error);
@@ -184,12 +184,12 @@ describe('loadPhases — defensive validation', () => {
 
   it('throws when exec returns JSON that is not an object', async () => {
     const exec = () => JSON.stringify([1, 2, 3]);
-    await assert.rejects(() => loadPhases({ cwd: '/fake', exec }), Error);
+    assert.throws(() => loadPhases({ cwd: '/fake', exec }), Error);
   });
 
   it('throws when exec returns JSON without a phases key', async () => {
     const exec = () => JSON.stringify({ milestones: [], phase_count: 0 });
-    await assert.rejects(
+    assert.throws(
       () => loadPhases({ cwd: '/fake', exec }),
       (err) => {
         assert.ok(err instanceof Error);
@@ -204,7 +204,26 @@ describe('loadPhases — defensive validation', () => {
 
   it('throws when exec returns JSON where phases is not an array', async () => {
     const exec = () => JSON.stringify({ phases: { not: 'an array' }, milestones: [] });
-    await assert.rejects(() => loadPhases({ cwd: '/fake', exec }), Error);
+    assert.throws(() => loadPhases({ cwd: '/fake', exec }), Error);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Synchronous contract: loadPhases must NOT return a Promise. A capability
+// router/engine is dispatched synchronously by gsd-tools (async routers are
+// rejected), and sync-engine calls loadPhases without await — so an async
+// loadPhases silently yields `phasesData.phases is not iterable`. This guard
+// locks the sync contract that the integration dogfood caught.
+// ---------------------------------------------------------------------------
+
+describe('loadPhases — synchronous contract', () => {
+  it('returns a plain object, never a thenable', () => {
+    const exec = () => JSON.stringify({ milestones: [], phases: [] });
+    const result = loadPhases({ cwd: '/fake', exec });
+    assert.notStrictEqual(result, null);
+    assert.strictEqual(typeof result, 'object');
+    assert.strictEqual(typeof result.then, 'undefined');
+    assert.ok(Array.isArray(result.phases));
   });
 });
 

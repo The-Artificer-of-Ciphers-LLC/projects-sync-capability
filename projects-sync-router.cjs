@@ -23,7 +23,8 @@
  *   deps.writeFile(path, content)  — replaces fs.writeFileSync
  *   deps.mkdirp(dir)               — replaces fs.mkdirSync(..., {recursive:true})
  *   deps.log(msg)                  — replaces console.log
- *   deps.exec(argv)                — replaces real gh exec
+ *   deps.gsdExec(argv)             — replaces real gsd-tools exec (for loadPhases)
+ *   deps.ghExec(argv)              — replaces real gh exec (for github-client + resolveRepo)
  */
 
 const fs = require('node:fs');
@@ -62,13 +63,14 @@ function parseBoardFlag(args) {
 
 /**
  * Resolves the repo string: --repo flag takes priority, then `gh repo view`.
+ * Uses ghExec because `gh repo view` is a gh CLI call, not gsd-tools.
  */
-function resolveRepo(args, exec) {
+function resolveRepo(args, ghExec) {
   const fromFlag = parseRepoArg(args);
   if (fromFlag) return fromFlag;
 
   // Fall back: ask `gh`
-  const stdout = exec(['repo', 'view', '--json', 'nameWithOwner']);
+  const stdout = ghExec(['repo', 'view', '--json', 'nameWithOwner']);
   try {
     const parsed = JSON.parse(stdout);
     if (parsed && parsed.nameWithOwner) return parsed.nameWithOwner;
@@ -81,10 +83,26 @@ function resolveRepo(args, exec) {
 }
 
 /**
- * Default real exec implementation.
+ * Default exec for gh CLI (github-client methods + resolveRepo).
  */
-function realExec(argv) {
+function defaultGhExec(argv) {
   return execFileSync('gh', argv, { encoding: 'utf8' });
+}
+
+/**
+ * Default exec for gsd-tools CLI (loadPhases).
+ * Re-invokes the running gsd-tools entry point when possible so the capability
+ * does not depend on `gsd-tools` being on PATH separately.
+ */
+function defaultGsdExec(argv) {
+  const bin = process.env.GSD_TOOLS_BIN;
+  if (bin) {
+    return execFileSync(bin, argv, { encoding: 'utf8' });
+  }
+  if (process.argv && process.argv[1]) {
+    return execFileSync(process.execPath, [process.argv[1], ...argv], { encoding: 'utf8' });
+  }
+  return execFileSync('gsd-tools', argv, { encoding: 'utf8' });
 }
 
 /**
@@ -116,11 +134,11 @@ function humanSummary(receipt) {
 // ---------------------------------------------------------------------------
 
 function runStatus({ cwd, flagArgs, raw, deps }) {
-  const { loadPhases: lp, createGitHubClient: cgc, log, exec } = deps;
-  const repo = resolveRepo(flagArgs, exec);
+  const { loadPhases: lp, createGitHubClient: cgc, log, gsdExec, ghExec } = deps;
+  const repo = resolveRepo(flagArgs, ghExec);
 
-  const phasesData = lp({ cwd, exec });
-  const github = cgc({ repo, exec });
+  const phasesData = lp({ cwd, exec: gsdExec });
+  const github = cgc({ repo, exec: ghExec });
 
   // Build a dry-run report: inspect each phase without mutating
   const report = {
@@ -172,11 +190,11 @@ function runStatus({ cwd, flagArgs, raw, deps }) {
 // ---------------------------------------------------------------------------
 
 function runSyncCommand({ cwd, flagArgs, raw, deps, subcommand }) {
-  const { sync: syncFn, log, writeFile, mkdirp, exec } = deps;
-  const repo = resolveRepo(flagArgs, exec);
+  const { sync: syncFn, log, writeFile, mkdirp, gsdExec, ghExec } = deps;
+  const repo = resolveRepo(flagArgs, ghExec);
   const board = parseBoardFlag(flagArgs);
 
-  const receipt = syncFn({ cwd, repo, exec, board });
+  const receipt = syncFn({ cwd, repo, gsdExec, ghExec, board });
 
   // Write receipt to disk
   const receiptPath = path.join(cwd, RECEIPT_SUBPATH);
@@ -226,7 +244,8 @@ function routeProjectsSyncCommand({ args = [], cwd, raw = false, error, deps = {
     writeFile: (filePath, content) => fs.writeFileSync(filePath, content, 'utf8'),
     mkdirp: (dir) => fs.mkdirSync(dir, { recursive: true }),
     log: (msg) => console.log(msg),
-    exec: realExec,
+    gsdExec: defaultGsdExec,
+    ghExec: defaultGhExec,
     ...deps,
   };
 
