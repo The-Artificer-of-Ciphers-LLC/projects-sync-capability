@@ -591,3 +591,41 @@ describe('createGitHubClient — factory', () => {
     assert.ok(exec2.calls[0].includes('org/repo-b'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// ensureLabels (regression: gh issue create --label fails if label is absent)
+// ---------------------------------------------------------------------------
+
+describe('ensureLabels', () => {
+  function createCallsOf(mockExec) {
+    return mockExec.calls.filter(
+      (a) => a.includes('label') && a.includes('create'),
+    );
+  }
+
+  it('creates labels that do not already exist, scoped to the repo', () => {
+    // First exec = `gh label list` → empty; remaining = create responses.
+    const mockExec = makeMockExec([JSON.stringify([]), '', '']);
+    const client = createGitHubClient({ repo: REPO, exec: mockExec });
+
+    client.ensureLabels(['gsd:complete', 'gsd:pending']);
+
+    const creates = createCallsOf(mockExec);
+    const names = creates.map((a) => a[a.indexOf('create') + 1]);
+    assert.ok(names.includes('gsd:complete'), 'must create gsd:complete');
+    assert.ok(names.includes('gsd:pending'), 'must create gsd:pending');
+    for (const a of creates) {
+      assert.ok(a.includes(REPO), `create must be repo-scoped: ${JSON.stringify(a)}`);
+      assert.ok(a.includes('--color'), `create must set a color: ${JSON.stringify(a)}`);
+    }
+  });
+
+  it('is idempotent — does not re-create labels that already exist', () => {
+    const mockExec = makeMockExec([JSON.stringify([{ name: 'gsd:complete' }])]);
+    const client = createGitHubClient({ repo: REPO, exec: mockExec });
+
+    client.ensureLabels(['gsd:complete']);
+
+    assert.equal(createCallsOf(mockExec).length, 0, 'existing label must not be re-created');
+  });
+});
