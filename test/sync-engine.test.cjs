@@ -49,6 +49,7 @@ function makeFakeGitHub(stubs = {}) {
     updateIssue: [],
     setIssueState: [],
     ensureMilestone: [],
+    ensureLabels: [],
   };
 
   function findIssueByMarker(phaseNumber) {
@@ -84,7 +85,13 @@ function makeFakeGitHub(stubs = {}) {
     return stub !== undefined ? stub : 1;
   }
 
-  return { calls, findIssueByMarker, createIssue, updateIssue, setIssueState, ensureMilestone };
+  function ensureLabels(labels) {
+    calls.ensureLabels.push({ labels });
+    const stub = stubs.ensureLabels;
+    if (typeof stub === 'function') return stub(labels);
+  }
+
+  return { calls, findIssueByMarker, createIssue, updateIssue, setIssueState, ensureMilestone, ensureLabels };
 }
 
 // ---------------------------------------------------------------------------
@@ -598,5 +605,71 @@ describe('sync() — two-seam exec separation', () => {
     }
     // The two refs must be different (they are separate seams)
     assert.notStrictEqual(myGsdExec, myGhExec, 'gsdExec and ghExec must be distinct references');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runSync — label pre-creation (regression: labels applied but never created)
+// ---------------------------------------------------------------------------
+
+describe('runSync — label pre-creation', () => {
+  it('calls github.ensureLabels once with the gsd status labels before creating issues', () => {
+    const github = makeFakeGitHub({ findIssueByMarker: null, createIssue: { number: 1 } });
+    runSync({ phasesData: makePhasesData(), github, milestoneTitle: 'v1.0' });
+
+    assert.equal(github.calls.ensureLabels.length, 1, 'ensureLabels must be called exactly once');
+    const labels = github.calls.ensureLabels[0].labels;
+    assert.ok(Array.isArray(labels), 'ensureLabels must receive an array');
+    assert.ok(
+      labels.includes('gsd:complete') && labels.includes('gsd:pending') && labels.includes('gsd:in-progress'),
+      'must ensure the gsd status labels exist',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runSync — milestone-ensure failure resilience
+// ---------------------------------------------------------------------------
+
+describe('runSync — milestone-ensure failure resilience', () => {
+  it('still creates issues, without a milestone, when ensureMilestone throws', () => {
+    const github = makeFakeGitHub({
+      findIssueByMarker: null,
+      createIssue: { number: 1 },
+      ensureMilestone: () => { throw new Error('HTTP 403: rate limited'); },
+    });
+    const receipt = runSync({ phasesData: makePhasesData(), github, milestoneTitle: 'v1.0' });
+
+    assert.equal(github.calls.createIssue.length, 2, 'issues must still be created when the milestone fails');
+    for (const c of github.calls.createIssue) {
+      assert.ok(
+        c.milestone === undefined || c.milestone === null,
+        'createIssue must not receive a milestone title when ensureMilestone failed',
+      );
+    }
+    assert.equal(receipt.created.length, 2, 'both phases must be created');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runSync — create path closes completed phases
+// ---------------------------------------------------------------------------
+
+describe('runSync — create path closes completed phases', () => {
+  it('sets a newly-created issue to closed when the phase is complete', () => {
+    const phasesData = makePhasesData({
+      phases: [
+        { number: 1, name: 'Done', goal: 'Finished.', complete: true, disk_status: null, plan_count: 0 },
+      ],
+    });
+    const github = makeFakeGitHub({ findIssueByMarker: null, createIssue: { number: 55 } });
+    const receipt = runSync({ phasesData, github, milestoneTitle: 'v1.0' });
+
+    assert.deepEqual(
+      github.calls.setIssueState,
+      [{ number: 55, state: 'closed' }],
+      'a completed phase must be closed immediately after creation',
+    );
+    assert.equal(receipt.closed.length, 1, 'receipt.closed must record the close-on-create');
   });
 });
